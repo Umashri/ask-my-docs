@@ -9,6 +9,7 @@ import os
 import json
 import numpy as np
 import google.generativeai as genai
+import time
 from dotenv import load_dotenv
 
 # --- Setup ---
@@ -71,11 +72,11 @@ def retrieve(question, chunks, chunk_vectors):
     above = [i for i in ranked if scores[i] >= THRESHOLD]
     indices = above if len(above) >= MIN_CHUNKS else ranked[:MIN_CHUNKS]
 
-    return [chunks[i] for i in indices], [(i, scores[i]) for i in indices]
+    return [chunks[i] for i in indices], [(int(i), float(scores[i])) for i in indices]
 
+def generate_answer(question, retrieved_chunks, max_retries=4):
+    """Ask the model to answer using only the retrieved context, retrying on rate limits."""
 
-def generate_answer(question, retrieved_chunks):
-    """Ask the model to answer using only the retrieved context."""
     context = "\n\n".join(retrieved_chunks)
     prompt = f"""Answer the question using only the context below.
 If the context does not contain the answer, say you don't know.
@@ -86,10 +87,16 @@ Context:
 Question: {question}"""
 
     model = genai.GenerativeModel(CHAT_MODEL)
-    try:
-        return model.generate_content(prompt).text
-    except Exception as e:
-        return f"(Could not generate an answer: {e})"
+    for attempt in range(max_retries):
+        try:
+            return model.generate_content(prompt, request_options={"timeout": 30}).text
+        except Exception as e:
+            if ("429" in str(e) or "504" in str(e)) and attempt < max_retries - 1:
+                wait = 15 * 2 ** attempt   # 15s, 30s, 60s - exponential backoff
+                print(f"    rate limited, retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                return f"(Could not generate an answer: {e})"
 
 
 def main():
